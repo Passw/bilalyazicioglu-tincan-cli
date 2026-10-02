@@ -1046,6 +1046,27 @@ mod pictures {
         out
     }
 
+    /// One reading of the mesh, as `link_status` would hand it over:
+    /// (who, through a relay, round trip in ms).
+    fn mesh_reading(readings: &[(u8, bool, u64)]) -> crate::net::voice::LinkStatus {
+        let per_peer: std::collections::BTreeMap<_, _> = readings
+            .iter()
+            .map(|&(seed, relayed, ms)| {
+                let rtt = std::time::Duration::from_millis(ms);
+                (
+                    PeerId([seed; 32]),
+                    crate::net::voice::PeerLink { relayed, rtt },
+                )
+            })
+            .collect();
+        crate::net::voice::LinkStatus {
+            direct: per_peer.values().filter(|l| !l.relayed).count(),
+            relayed: per_peer.values().filter(|l| l.relayed).count(),
+            worst_rtt: per_peer.values().map(|l| l.rtt).max(),
+            per_peer,
+        }
+    }
+
     #[test]
     #[ignore = "generates assets/demo.mp4 and assets/demo.gif using rsvg-convert and ffmpeg"]
     fn demo_video() {
@@ -1086,6 +1107,7 @@ mod pictures {
                     peer(1, "alice", Some(ChannelId(0))),
                     peer(2, "bob", Some(ChannelId(0))),
                     peer(3, "cem", Some(ChannelId(1))),
+                    peer(4, "deniz", Some(ChannelId(0))),
                 ],
                 recent_chat: vec![],
             },
@@ -1093,19 +1115,19 @@ mod pictures {
         app.voice = Some(ChannelId(0));
         app.voice_available = true;
         app.motion = true;
-        app.link = crate::net::voice::LinkStatus {
-            direct: 2,
-            relayed: 0,
-            worst_rtt: Some(std::time::Duration::from_millis(18)),
-            ..Default::default()
-        };
+        let healthy = [(2, false, 18), (4, false, 26)];
+        // After the tour, deniz moves to hotel wifi and drops to a relay: the header
+        // names him, his row says so, and the far can becomes him. He is direct again
+        // before the camera pulls out, so the loop ends on a healthy line.
+        let relayed = [(2, false, 18), (4, true, 140)];
+        app.take_link(mesh_reading(&healthy));
         app.active_input_name = Some("MacBook Pro Microphone".into());
         app.active_output_name = Some("AirPods Pro".into());
         app.input_gate = 0.23;
         app.typing_volume = 0.4;
         app.peer_gains.insert(PeerId([3; 32]), 0.0);
 
-        const TOTAL_FRAMES: usize = 240;
+        const TOTAL_FRAMES: usize = 360;
         const OVERVIEW: Camera = Camera {
             x: 640.0,
             y: 360.0,
@@ -1147,6 +1169,14 @@ mod pictures {
                 SETTINGS_FOCUS
             } else if f < 235 {
                 SETTINGS_FOCUS.lerp(&OVERVIEW, (f - 215) as f32 / 20.0)
+            } else if f < 245 {
+                OVERVIEW
+            } else if f < 265 {
+                OVERVIEW.lerp(&VOICE_FOCUS, (f - 245) as f32 / 20.0)
+            } else if f < 330 {
+                VOICE_FOCUS
+            } else if f < 350 {
+                VOICE_FOCUS.lerp(&OVERVIEW, (f - 330) as f32 / 20.0)
             } else {
                 OVERVIEW
             };
@@ -1154,6 +1184,11 @@ mod pictures {
             let now = std::time::Instant::now();
             let sim_ms = f as u64 * 50;
             app.started = now - std::time::Duration::from_millis(sim_ms);
+            app.take_link(mesh_reading(if (275..310).contains(&f) {
+                &relayed
+            } else {
+                &healthy
+            }));
 
             // Voice & Pulse simulation (Bob speaks)
             if (35..85).contains(&f) {
@@ -1168,6 +1203,15 @@ mod pictures {
             } else {
                 app.speaking.clear();
                 app.peer_levels.clear();
+            }
+
+            if f == 270 {
+                app.apply(Event::Chat(ChatLine {
+                    channel: ChannelId(0),
+                    from: PeerId([4; 32]),
+                    text: "on hotel wifi now, still hear me?".into(),
+                    at: 1_757_000_160,
+                }));
             }
 
             if f == 65 {
@@ -1334,25 +1378,6 @@ mod pictures {
         let me = PeerId([1; 32]);
         let bob = PeerId([2; 32]);
         let deniz = PeerId([4; 32]);
-        // One reading of the mesh: (who, through a relay, round trip in ms).
-        let links = |readings: &[(u8, bool, u64)]| {
-            let per_peer: std::collections::BTreeMap<_, _> = readings
-                .iter()
-                .map(|&(seed, relayed, ms)| {
-                    let rtt = std::time::Duration::from_millis(ms);
-                    (
-                        PeerId([seed; 32]),
-                        crate::net::voice::PeerLink { relayed, rtt },
-                    )
-                })
-                .collect();
-            crate::net::voice::LinkStatus {
-                direct: per_peer.values().filter(|l| !l.relayed).count(),
-                relayed: per_peer.values().filter(|l| l.relayed).count(),
-                worst_rtt: per_peer.values().map(|l| l.rtt).max(),
-                per_peer,
-            }
-        };
         let healthy = [(2, false, 18), (3, false, 24), (4, false, 31)];
         // Deniz drops to a relay; everyone else stays direct, so the header, the far
         // can and his row in the roster all have to agree on who it is.
@@ -1414,14 +1439,14 @@ mod pictures {
                         peer(4, "deniz", Some(ChannelId(0))),
                         peer(5, "jack", Some(ChannelId(1))),
                     ]));
-                    app.take_link(links(&healthy));
+                    app.take_link(mesh_reading(&healthy));
                 }
                 BOB_SAYS => say(&mut app, bob, "hey, can you hear me alright?", 0),
                 SEND => {
                     say(&mut app, me, reply, 40);
                     app.input.clear();
                 }
-                RELAY => app.take_link(links(&relayed)),
+                RELAY => app.take_link(mesh_reading(&relayed)),
                 RELAY_SAYS => say(
                     &mut app,
                     deniz,
@@ -1430,7 +1455,7 @@ mod pictures {
                 ),
                 MEND => {
                     app.dropped_at = None;
-                    app.take_link(links(&healthy));
+                    app.take_link(mesh_reading(&healthy));
                 }
                 SETTINGS => {
                     app.view_mode = ViewMode::Settings;
