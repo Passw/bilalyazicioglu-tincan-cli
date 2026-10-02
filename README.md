@@ -138,7 +138,7 @@ cargo install tincan-chat     # the command it installs is still `tincan`
 
 The crate is `tincan-chat` because `tincan` and `tincan-cli` were both taken on
 crates.io by unrelated projects before this one existed. Only the published name
-differs; the binary, this repository and the npm package are all `tincan`.
+differs; the command it installs is `tincan`, the same as every other way in.
 
 **From git**, to build whatever is on `main`:
 
